@@ -6,8 +6,25 @@ import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
 import math
+from flask_cors import CORS
 
 app = Flask(__name__)
+CORS(app)
+ct_ctype = {1: 'Cloud Free Land',
+  2: 'Cloud Free Sea',
+  3: 'Snow Over Land',
+  4: 'Sea Ice',
+  15: 'High Semitransparent Above Snow Ice',
+  5: 'Very Low Clouds',
+  6: 'Low Clouds',
+  7: 'Mid Level Clouds',
+  8: 'High Opaque Clouds',
+  9: 'Very High Opaque Clouds',
+  10: 'Fractional Clouds',
+  11: 'High Semitransparent Thin Clouds',
+  12: 'High Semitransparent Moderately Thick Clouds',
+  13: 'High Semitransparent Thick Clouds',
+  14: 'High Semitransparent Above Low Or Medium Clouds'}
 
 app.config['SQLALCHEMY_DATABASE_URI'] = 'postgresql://weather_data_user:bronzed1234@34.172.251.28:5432/postgres'
 
@@ -105,6 +122,19 @@ class CloudData(db.Model):
     timestamp = db.Column(db.DateTime, nullable=False)
     st = db.Column(db.String(10),nullable=False)
 
+class TempData(db.Model):
+    __bind_key__ = 'data_db'
+    __tablename__ = 'wrf_temp'  # Specify the existing table name
+    __table_args__ = (db.PrimaryKeyConstraint('timestamp', 'temp'),
+                      {'schema': 'data_forecast' })  # Specify the schema name
+
+    lat = db.Column(db.Float,nullable=True)
+    lon = db.Column(db.Float,nullable=True)
+    temp = db.Column(db.Float,nullable=True)
+    timestamp = db.Column(db.DateTime, nullable=False)
+    st = db.Column(db.String(10),nullable=False)
+    
+    
 # User Model (stored in the primary 'users_db')
 class User(db.Model):
     __bind_key__ = 'app_db'
@@ -248,8 +278,17 @@ def get_location_data():
             filter(CloudData.lat < lat_max ).\
                 filter(CloudData.lat >= lat_min).\
                     filter(CloudData.lon>= lon_min).all()
+    temp_data =  TempData.query.\
+        filter(TempData.timestamp == timestamp).\
+            filter(TempData.lat < lat_max ).\
+                filter(TempData.lat >= lat_min).\
+                    filter(TempData.lon>= lon_min).all()           
     cloud_data = [{"lat": data.lat, "lon": data.lon, "timestamp": data.timestamp,'ct':data.ct} for data in cloud_data]
     cloud_data = pd.DataFrame(cloud_data)
+    
+    temp_data = [{"lat": datat.lat, "lon": datat.lon, "timestamp": datat.timestamp,'temp':datat.temp} for datat in temp_data]
+    temp_data = pd.DataFrame(temp_data)
+    # print(temp_data)
     # print(cloud_data)
     if len(cloud_data)>0:
         cloud_data['lat_diff'] = cloud_data['lat'] - lat
@@ -263,9 +302,27 @@ def get_location_data():
         cloud_data['lat'] = lat
         cloud_data['lon'] = lon
         cloud_data['timestamp'] = timestamp
+        cloud_data['cloud_type'] = cloud_data['ct'].map(ct_ctype)
+    
         # cloud_data['']
     else:
-        cloud_data = pd.DataFrame({'ct':None,'lat':[lat],'lon':[lon],"timestamp":timestamp})
+        cloud_data = pd.DataFrame({'ct':None,'lat':[lat],'lon':[lon],"timestamp":timestamp,'cloud_type':None})
+
+    if len(temp_data)>0:
+        temp_data['lat_diff'] = temp_data['lat'] - lat
+        temp_data['lat_diff'] = temp_data['lat_diff'].abs()
+        temp_data['lon_diff'] = temp_data['lon'] - lon
+        temp_data['lon_diff'] = temp_data['lon_diff'].abs()
+        temp_data['offset'] = temp_data['lat_diff'] + temp_data['lon_diff']
+        temp_data.sort_values('offset',ascending=True,inplace=True)
+        temp_data = temp_data.head(1)
+        # ct = cloud_data.head(1)['ct']
+        temp_data['lat'] = lat
+        temp_data['lon'] = lon
+        temp_data['timestamp'] = timestamp
+        
+        # print(temp_data)
+        
     # get ct data
     ct = list(cloud_data['ct'])[0]
     climate = 'clear'
@@ -273,15 +330,18 @@ def get_location_data():
         climate = 'clear'
     else:
         climate = 'cloudy'
-    
-    temp = get_temperature(time_of_day=timestamp,weather_condition=climate)
+    if len(temp_data) == 0: 
+        temp = get_temperature(time_of_day=timestamp,weather_condition=climate)
+    else:
+        temp = list(temp_data['temp'])[0]
+        
     cloud_data['temp'] = temp
     cloud_data['cloud_top_temp'] = None
-    send_cols = ['lat','lon','timestamp','temp','cloud_top_temp','ct']
-
+    send_cols = ['lat','lon','timestamp','temp','cloud_top_temp','ct','cloud_type']
+    # print(cloud_data)
     cloud_data = cloud_data.loc[:,send_cols]
     cloud_data.fillna('NULL',inplace=True)
-    # print(cloud_data)
+    
     return jsonify(cloud_data.to_dict('records'),200)
     
 
